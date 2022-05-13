@@ -66,30 +66,59 @@ function track(target, key) {
   activeEffect.deps.push(deps)
 }
 
-function trigger(target, key, type) {
+function trigger(target, key, type, newVal) {
   //  根据 target 从桶中取得 depsMap， 一个 Map 类型： key --> effects
   const depsMap = bucket.get(target)
   if (!depsMap) return
-  // 根据 key 取得所有的 effects
-  const effects = depsMap.get(key)
-  //
-  const iterateEffects = depsMap.get(ITERATE_KEY)
 
   const effectsToRun = new Set()
+
+  // 根据 key 取得所有的 effects
+  const effects = depsMap.get(key)
   effects && effects.forEach(effectFn => {
     // 如果 trigger 触发的副作用与当前执行的副作用相同，则不触发执行
     if (effectFn !== activeEffect) {
       effectsToRun.add(effectFn)
     }
   })
+
   //
   if (type === 'ADD' || type === 'DELETE') {
+    // obj 相关联的副作用
+    const iterateEffects = depsMap.get(ITERATE_KEY)
     iterateEffects && iterateEffects.forEach(effectFn => {
       if (effectFn !== activeEffect) {
         effectsToRun.add(effectFn)
       }
     })
   }
+
+  // 当操作类型为 ADD，目标为数组，应取出执行与 length 属性相关的副作用函数
+  if (type === 'ADD' && Array.isArray(target)) {
+    // 取出 length 相关的副作用
+    const lengthEffects = depsMap.get('length')
+    lengthEffects && lengthEffects.forEach(effectFn => {
+      if (effectFn !== activeEffect) {
+        effectsToRun.add(effectFn)
+      }
+    })
+  }
+
+  // 如果操作目标是数组，并修改了数组的 length 属性
+  if (Array.isArray(target) && key === 'length') {
+    // 对与索引大于等于新的 length 值的元素，
+    // 需要把所有关联的副作用函数取出并添加到 effectsToRun 中待执行
+    depsMap.forEach((effects, key) => {
+      if (key >= newVal) {
+        effects.forEach(effectFn => {
+          if (effectFn !== activeEffect) {
+            effectsToRun.add(effectFn)
+          }
+        })
+      }
+    })
+  }
+
   // 执行 effects
   effectsToRun.forEach(effectFn => {
     if (effectFn.options.scheduler) {
@@ -102,7 +131,7 @@ function trigger(target, key, type) {
 
 const ITERATE_KEY = Symbol()
 
-function createReactive(obj, isShallow = false) {
+function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     get(target, key, receiver) {
       // 代理对象可以通过 raw 属性访问原始数据
@@ -113,7 +142,10 @@ function createReactive(obj, isShallow = false) {
       // 获取到原始结果
       const res = Reflect.get(target, key, receiver)
 
-      track(target, key)
+      // 非只读时才需要建立相应关系
+      if (!isReadonly) {
+        track(target, key)
+      }
 
       // 如果是浅响应
       if (isShallow) {
@@ -122,22 +154,34 @@ function createReactive(obj, isShallow = false) {
 
       if (typeof res === 'object' && res !== null) {
         // 调用 reactive  将结果包装成响应式数据并返回
-        return createReactive(res)
+        // 如果数据只读，则使用 readonly 进行包装
+        return isReadonly ? readonly(res) : reactive(res)
       }
 
       return res
     },
     set(target, key, newVal, receiver) {
+      // 如果是只读的，则打印警告信息并返回
+      if (isReadonly) {
+        console.warn(`属性 ${key} 为只读`)
+        return true
+      }
+
       const oldVal = target[key]
       // 检查属性是否存在
-      const type = Object.prototype.hasOwnProperty.call(target, key) ? 'SET' : 'ADD'
+      const type = Array.isArray(target)
+        // 如果代理目标时数组，则检查被设置的索引值是否小于数组长度
+        // 如果 true，则视作 SET，否则为 ADD
+        ? Number(key) < target.length ? 'SET' : 'ADD'
+        : Object.prototype.hasOwnProperty.call(target, key) ? 'SET' : 'ADD'
+
       // 设置
       const res = Reflect.set(target, key, newVal, receiver)
 
       // 说明 receiver 就是 target 的代理对象
       if (target === receiver.raw) {
         if (oldVal !== newVal && (oldVal === oldVal || newVal === newVal)) {
-          trigger(target, key, type)
+          trigger(target, key, type, newVal)
         }
       }
 
@@ -153,6 +197,12 @@ function createReactive(obj, isShallow = false) {
       return Reflect.ownKeys(target)
     },
     deleteProperty(target, key) {
+      // 如果是只读的，则打印警告信息并返回
+      if (isReadonly) {
+        console.warn(`属性 ${key} 为只读`)
+        return true
+      }
+
       const hadKey = Object.prototype.hasOwnProperty.call(target, key)
       const res = Reflect.deleteProperty(target, key)
 
@@ -170,6 +220,14 @@ function reactive(obj) {
 
 function shallowReactive(obj) {
   return createReactive(obj, true)
+}
+
+function readonly(obj) {
+  return createReactive(obj, false, true /* 只读 */)
+}
+
+function shallowReadonly(obj) {
+  return createReactive(obj, true /* shallow */, true)
 }
 
 function computed(getter) {
