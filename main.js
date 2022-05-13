@@ -1,6 +1,8 @@
 const bucket = new WeakMap()
 let activeEffect // 全局变量，当前被激活的 effect 函数
 const effectStack = []
+// 存储原始对象到代理对象的映射
+const reactiveMap = new Map()
 
 const TriggerType = {
   SET: 'SET',
@@ -45,8 +47,7 @@ function effect(fn, options = {}) {
 }
 
 function track(target, key) {
-  // console.log(12)
-  if (!activeEffect) return
+  if (!activeEffect || !shouldTrack) return
   //  根据 target 从桶中取得 depsMap， 一个 Map 类型： key --> effects
   let depsMap = bucket.get(target)
   // 如果不存在， 新建一个 Map 与 target 关联
@@ -131,6 +132,35 @@ function trigger(target, key, type, newVal) {
 
 const ITERATE_KEY = Symbol()
 
+const arrayInstrumentations = {}
+  ;['include', 'indexOf', 'lastIndexOf'].forEach(method => {
+    const originMethod = Array.prototype[method]
+    arrayInstrumentations[method] = function (...args) {
+      // this 是代理对象，现在代理对象中查找，结果存到 res 中
+      let res = originMethod.apply(this, args)
+
+      if (res === false) {
+        // res 为 false 说明没找到，通过 this.raw 拿到原始数组，重新查找并更新 res
+        res = originMethod.apply(this.raw, args)
+      }
+
+      return res
+    }
+  })
+let shouldTrack = true
+  ;['push', 'pop', 'shift', 'unshift', 'splice'].forEach(method => {
+    const originMethod = Array.prototype[method]
+    // 重写
+    arrayInstrumentations[method] = function (...args) {
+      // 调用原始方法前，禁止追踪
+      shouldTrack = false
+      let res = originMethod.apply(this, args)
+      // 调用原始方法后，恢复，允许追踪
+      shouldTrack = true
+      return res
+    }
+  })
+
 function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     get(target, key, receiver) {
@@ -139,13 +169,20 @@ function createReactive(obj, isShallow = false, isReadonly = false) {
         return target
       }
 
-      // 获取到原始结果
-      const res = Reflect.get(target, key, receiver)
+      // 如果操作目标是数组，且 key 存在 arrayInstrumentations 上
+      // 那么返回定义在 arrayInstrumentations 上的值
+      if (Array.isArray(target) && arrayInstrumentations.hasOwnProperty(key)) {
+        return Reflect.get(arrayInstrumentations, key, receiver)
+      }
 
       // 非只读时才需要建立相应关系
-      if (!isReadonly) {
+      // 如果 key 是 Symbol，则不进行追踪
+      if (!isReadonly && typeof key !== 'symbol') {
         track(target, key)
       }
+
+      // 获取到原始结果
+      const res = Reflect.get(target, key, receiver)
 
       // 如果是浅响应
       if (isShallow) {
@@ -193,7 +230,8 @@ function createReactive(obj, isShallow = false, isReadonly = false) {
     },
     ownKeys(target) {
       // 将副作用与 ITERATE_KEY 关联
-      track(target, ITERATE_KEY)
+      // 如果操作 target 是数组，则使用 length 属性作为 key 建立响应式关联
+      track(target, Array.isArray(target) ? 'length' : ITERATE_KEY)
       return Reflect.ownKeys(target)
     },
     deleteProperty(target, key) {
@@ -215,7 +253,15 @@ function createReactive(obj, isShallow = false, isReadonly = false) {
 }
 
 function reactive(obj) {
-  return createReactive(obj)
+  // 优先查询是否存在代理，若存在直接返回已有的代理
+  const existionProxy = reactiveMap.get(obj)
+  if (existionProxy) return existionProxy
+
+  // 否则，创建新的代理对象
+  const proxy = createReactive(obj)
+  // 存储到 Map 中，防止重复创建
+  reactiveMap.set(obj, proxy)
+  return proxy
 }
 
 function shallowReactive(obj) {
@@ -318,6 +364,9 @@ function traverse(value, seen = new Set()) {
   return value
 }
 
+
+
+/** test part */
 const obj = shallowReactive({ foo: { bar: 1 } })
 // const obj = reactive({ foo: { bar: 1 } })
 effect(() => {
@@ -325,3 +374,11 @@ effect(() => {
 })
 obj.foo = { bar: 2 }
 obj.foo.bar = 3
+
+const arr = reactive([])
+effect(() => {
+  arr.push(1)
+})
+effect(() => {
+  arr.push(2)
+})
