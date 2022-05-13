@@ -84,7 +84,10 @@ function trigger(target, key, type, newVal) {
   })
 
   //
-  if (type === 'ADD' || type === 'DELETE') {
+  if (type === 'ADD' || type === 'DELETE' ||
+    // 如果操作是 SET，且目标是 Map 类型
+    // 也应该触发与 ITERATE_KEY 相关联的副作用函数执行
+    (type === 'SET' && Object.prototype.toString.call(target) === '[object Map]')) {
     // obj 相关联的副作用
     const iterateEffects = depsMap.get(ITERATE_KEY)
     iterateEffects && iterateEffects.forEach(effectFn => {
@@ -161,12 +164,91 @@ let shouldTrack = true
     }
   })
 
+const mutableInstrumentations = {
+  get(key) {
+    const target = this.raw
+    const had = target.has(key)
+    track(target, key)
+    // 如果存在，则返回结果。这里得到的结果仍然是可代理的数据
+    // 则要返回 reactive 包装后的响应式数据
+    if (had) {
+      const res = target.get(kek)
+      return typeof res === 'object' ? reactive(res) : res
+    }
+  },
+  set(key, value) {
+    const target = this.raw
+    const had = target.has(key)
+    const oldVal = target.get(key)
+
+    const rawValue = value.raw || value
+    target.set(key, rawValue)
+
+    // 如果不存在，则说明是 ADD 操作，否则是 SET 操作
+    if (!had) {
+      trigger(target, key, 'ADD')
+    } else if (oldVal !== value || (oldVal === oldVal && value === value)) {
+      trigger(target, key, 'SET')
+    }
+
+  },
+  add(key) {
+    // this 仍然指向代理对象，通过 raw 获取原属对象
+    const target = this.raw
+
+    // 先判断值是否存在
+    const hadKey = target.has(key)
+    // 通过原始对象执行 add 方法
+    // 注意这里不再需要 .bind 了，因为直接通过 target 调用
+    const res = target.add(key)
+    // 不存在才需要触发响应
+    if (!hadKey) {
+      // 调用 trigger 触发响应，并指定操作为 ADD
+      trigger(target, key, 'ADD')
+    }
+
+    return res
+  },
+  delete(key) {
+    const target = this.raw
+    const hadKey = target.has(key)
+    const res = target.delete(key)
+    // 删除属性存在才触发响应
+    if (!hadKey) {
+      trigger(target, key, 'DELETE')
+    }
+    return res
+  },
+  forEach(callback, thisArg) {
+    // wrap 把可代理的值转换成响应式数据
+    const wrap = (val) => typeof val == 'object' ? reactive(val) : val
+
+    const target = this.raw
+    track(target, ITERATE_KEY)
+    target.forEach((v, k) => {
+      // 手动调用 callback，用 wrap 包裹参数实现响应式
+      callback(thisArg, wrap(v), wrap(k), this)
+    })
+  }
+}
+
 function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     get(target, key, receiver) {
       // 代理对象可以通过 raw 属性访问原始数据
-      if (key === 'raw') {
-        return target
+      if (key === 'raw') return target
+
+      if (Object.prototype.toString.call(target) in ['[object Set]', '[object Map]'] &&
+        mutableInstrumentations.hasOwnProperty(key)) {
+
+        if (key === 'size') {
+          // 如果是 size 属性
+          track(target, ITERATE_KEY)
+          return Reflect.get(target, key, target)
+        }
+        // 如果 target 是个 Set 或 Map，且 key 在 mutableInstrumentations 中
+        // 返回定义在 mutableInstrumentations 对象下的方法
+        return mutableInstrumentations[key]
       }
 
       // 如果操作目标是数组，且 key 存在 arrayInstrumentations 上
