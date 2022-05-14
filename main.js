@@ -97,6 +97,20 @@ function trigger(target, key, type, newVal) {
     })
   }
 
+  if (
+    // 操作是 ADD 或 DELETE
+    (type === 'ADD' || type === 'DELETE') &&
+    // 并且是 Map 类型的数据
+    Object.prototype.toString.call(target) === '[object Map]') {
+    // 则取出与 MAP_KEY_ITERATE_KEY 相关联的副作用函数执行
+    const iterateEffects = depsMap.get(MAP_KEY_ITERATE_KEY)
+    iterateEffects && iterateEffects.forEach(effectFn => {
+      if (effectFn !== activeEffect) {
+        effectsToRun.add(effectFn)
+      }
+    })
+  }
+
   // 当操作类型为 ADD，目标为数组，应取出执行与 length 属性相关的副作用函数
   if (type === 'ADD' && Array.isArray(target)) {
     // 取出 length 相关的副作用
@@ -134,6 +148,7 @@ function trigger(target, key, type, newVal) {
 }
 
 const ITERATE_KEY = Symbol()
+const MAP_KEY_ITERATE_KEY = Symbol()
 
 const arrayInstrumentations = {}
   ;['include', 'indexOf', 'lastIndexOf'].forEach(method => {
@@ -229,6 +244,52 @@ const mutableInstrumentations = {
       // 手动调用 callback，用 wrap 包裹参数实现响应式
       callback(thisArg, wrap(v), wrap(k), this)
     })
+  },
+  [Symbol.iterator]: createIterationMethod(IterationType.ENTRIES),
+  entries: createIterationMethod(IterationType.ENTRIES),
+  values: createIterationMethod(IterationType.VALUES),
+  keys: createIterationMethod(IterationType.KEYS),
+
+}
+
+const IterationType = {
+  KEYS: 'KEYS',
+  VALUES: 'VALUES',
+  ENTRIES: 'ENTRIES'
+}
+
+function createIterationMethod(type) {
+  return function iterationMethod() {
+    const target = this.raw
+    let itr
+    if (type === IterationType.ENTRIES) {
+      itr = target[Symbol.iterator]()
+    } else if (type === IterationType.KEYS) {
+      itr = target.keys()
+    } else if (type === IterationType.VALUES) {
+      itr = target.values()
+    }
+
+    const wrap = (val) => typeof val == 'object' ? reactive(val) : val
+
+    type === IterationType.KEYS ? track(target, MAP_KEY_ITERATE_KEY) : track(target, ITERATE_KEY)
+
+    return {
+      next() {
+        const { value, done } = itr.next()
+        return {
+          value: value
+            ? type === IterationType.ENTRIES ?
+              [wrap(value[0]), wrap(value[1])] : wrap(value)
+            : value,
+          done
+        }
+      },
+      // 实现可迭代协议
+      [Symbol.iterator]() {
+        return this
+      }
+    }
   }
 }
 
