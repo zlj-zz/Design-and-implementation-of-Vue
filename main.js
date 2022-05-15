@@ -507,6 +507,68 @@ function traverse(value, seen = new Set()) {
   return value
 }
 
+function ref(val) {
+  const wrapper = {
+    value: val
+  }
+  // 使用 Object.defineProperty 在 wrapper 上定义一个不可枚举属性 __v_isRef，并设置为 true
+  Object.defineProperty(wrapper, '__v_isRef', {
+    value: true
+  })
+
+  return reactive(wrapper)
+}
+
+function toRef(obj, key) {
+  const wrapper = {
+    get value() {
+      return obj[key]
+    },
+    // 允许设置值
+    set value(val) {
+      obj[key] = val
+    }
+  }
+
+  Object.defineProperty(wrapper, '__v_isRef', {
+    value: true
+  })
+
+  return wrapper
+}
+
+function toRefs(obj) {
+  const ret = {}
+  // 遍历对象
+  for (const key in obj) {
+    // 逐个调用 toRef 完成代理转换
+    ret[key] = toRef(obj, key)
+  }
+
+  return ret
+}
+
+function proxyRefs(target) {
+  return new Proxy(target, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver)
+      // 自动脱 ref实现，如果值是 ref，则返回它的 value 属性值
+      return value.__v_isRef ? value.value : value
+    },
+    set(target, key, newValue, receiver) {
+      const value = target[key]
+      // 如果值是 ref，设置其对应的 value 属性
+      if (value.__v_isRef) {
+        value.value = newValue
+        return true
+      }
+
+      return Reflect.set(target, key, newValue, receiver)
+    }
+  })
+}
+
+
 
 
 /** test part */
