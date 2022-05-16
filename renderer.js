@@ -1,8 +1,15 @@
+const Text = Symbol() // 文本节点的 type 标识
+const Comment = Symbol() // 注释节点的 type 标识
+const Fragment = Symbol()
+
 function createRenderer(options) {
   const {
     createElement,
-    insert,
     setElementText,
+    insert,
+    createText,
+    setText,
+    createComment,
     patchProps,
   } = options
   // 在这个作用域定义的函数都可以访问
@@ -102,12 +109,38 @@ function createRenderer(options) {
       }
     } else if (typeof type === 'object') {
       //如果 n2.type 的值是类型对象，则它描述的是组件
-    } else if (type === 'xxx') {
-      // 处理其他类型 vnode
+    } else if (type === Text) {
+      if (!n1) {
+        // 调用 createText 创建文本节点
+        const el = n2.el = createText(n2.children)
+        insert(el, container)
+      } else {
+        const el = n2.el = n1.el
+        if (n2.children !== n1.children) {
+          // 设置新的内容
+          setText(el, n2.children)
+        }
+      }
+    } else if (type === Comment) {
+      // 类似 Text 处理
+    } else if (type === Fragment) {
+      if (!n1) {
+        // 如果旧 vnode 不存在，只需遍历 Fragment 的 children 挂载即可
+        n2.children.forEach(c => patch(null, c, container))
+      } else {
+        // 如果旧 vnode 存在， 则只需更新 Fragment 的 children 即可
+        patchChildren(n1, n2, container)
+      }
     }
   }
 
   function unmount(vnode) {
+    // 卸载时，如果类型为 Fragment，则只需卸载 Fragment 的 children
+    if (vnode.type === Fragment) {
+      vnode.children.forEach(c => unmount(c))
+      return
+    }
+
     const parent = vnode.el.parentNode
     if (parent) {
       parent.removeChild(vnode.el)
@@ -153,6 +186,15 @@ const renderer = createRenderer({
   // 在给定的 parent 下添加指定元素
   insert(el, parent, anchor = null) {
     parent.insertBefore(el, anchor)
+  },
+  createText(text) {
+    return document.createTextNode(text)
+  },
+  setText(el, text) {
+    el.nodeValue = text
+  },
+  createComment(text) {
+    return document.createComment(text)
   },
   patchProps(el, key, preValue, nextValue) {
     // 匹配 on 开头的属性，视为事件
