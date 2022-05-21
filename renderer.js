@@ -31,7 +31,8 @@ function resolveProps(options, propData) {
   // 遍历为组件传递的 props
   for (const key in propData) {
     // 如果传入的 props 在组件的 props 上有定义，则视为合法 props
-    if (key in options) {
+    // 以 on 开头的，无论是否显示声明，都添加
+    if (key in options || key.startsWith('on')) {
       props[key] = propData[key]
     } else {
       // 否则作为 attrs
@@ -310,15 +311,36 @@ function createRenderer(options) {
     //
     const [props, attrs] = resolveProps(propsOption, vnode.props)
 
+    // 直接使用编译好的 vnode.children 做为 slots 即可
+    const slots = vnode.children || {}
+
     // 定义组件实例
     const instance = {
       state,
       props: shallowReactive(props),
       isMounted: false,
-      subTree: null
+      subTree: null,
+      slots
     }
 
-    const setupContext = { attrs }
+    // 定义 emit 函数，接收两个参数
+    // event：事件名
+    // payload：传递给事件的参数
+    function emit(event, ...payload) {
+      // 根据约定处理事件名，如 change -> onChange
+      const eventName = `on${event[0].toUpperCase() + event.slice(1)}`
+      // 根据处理后的事件名在 props 中寻咋处理函数
+      const handler = instance.props[eventName]
+
+      if (handler) {
+        // 调用并传递参数
+        handler(...payload)
+      } else {
+        console.error('事件不存在')
+      }
+    }
+
+    const setupContext = { attrs, emit, slots }
     // 调用 setup 函数，传入第一个参数为只读的 props，避免用户意外的修改 props
     // 将 setupContext 作为第二个参数传入
     const setupResult = setup(shallowReadonly(instance.props), setupContext)
@@ -342,7 +364,9 @@ function createRenderer(options) {
     const renderContext = new Proxy(instance, {
       get(t, k, r) {
         // 获取组件自身状态和 props 属性
-        const { state, props } = t
+        const { state, props, slots } = t
+
+        if (k === '$slots') return slots
 
         if (state && k in state) {
           return state[k]
@@ -609,7 +633,7 @@ const vnode = {
   ]
 }
 
-const MyComponent = {
+const MyComponent1 = {
   name: 'MyComponent',
   data() {
     return {
@@ -632,5 +656,15 @@ const vnode1 = {
   props: {
     title: 'A big title',
     other: this.val
+  }
+}
+
+const MyComponent2 = {
+  setup(props, { emit }) {
+    emit('change', 1, 2)
+
+    return () => {
+      // ...
+    }
   }
 }
