@@ -23,6 +23,7 @@ function queueJob(job) {
   }
 }
 
+// 用于解析组件的 props 和 attr 参数
 function resolveProps(options, propData) {
   const props = {}
   const attrs = {}
@@ -39,6 +40,24 @@ function resolveProps(options, propData) {
   }
 
   return [props, attrs]
+}
+
+// 判断是否有 props 变化
+function hasPropsChanged(preProps, nextProps) {
+  const nextKeys = Object.keys(nextProps)
+
+  // 新旧长度不同，说明有变化
+  if (nextKeys.length !== Object.keys(preProps).length) {
+    return true
+  }
+
+  for (let i = 0; i < nextKeys.length; i++) {
+    const key = nextKeys[i]
+    // 有不想等的值，说明有变化
+    if (nextProps[key] !== preProps[key]) return true
+  }
+
+  return false
 }
 
 const Text = Symbol() // 文本节点的 type 标识
@@ -301,6 +320,33 @@ function createRenderer(options) {
     // 将组件实例设置到 vnode 上，用于后续更新
     vnode.component = instance
 
+    // 创建渲染上下文对象，本质上是组件实例的代理
+    const renderContext = new Proxy(instance, {
+      get(t, k, r) {
+        //
+        const { state, props } = t
+        //
+        if (state && k in state) {
+          return state[k]
+        } else if (k in props) {
+          return props[k]
+        } else {
+          console.error('不存在')
+        }
+      },
+      set(t, k, v, r) {
+        const { state, props } = t
+
+        if (state && k in state) {
+          state[k] = v
+        } else if (k in props) {
+          props[k] = v
+        } else {
+          console.error('不存在')
+        }
+      }
+    })
+
     created && created()
 
     effect(() => {
@@ -331,6 +377,26 @@ function createRenderer(options) {
       // 指定该副作用函数的调度器
       scheduler: queueJob
     })
+  }
+
+  function patchComponent(n1, n2, anchor) {
+    // 获取组件实例，并让新节点 n2 也指向实例
+    const instance = (n2.instance = n1.instance)
+    const { props } = instance
+
+    // 检查 props 是否有变化
+    if (hasPropsChanged) {
+      // 获取新的 props
+      const [nextProps] = resolveProps(n2.type.props, n2.props)
+      // 更新 props
+      for (const k in nextProps) {
+        props[k] = nextProps[k]
+      }
+      // 删除不存在的 props
+      for (const k in props) {
+        if (!(k in nextProps)) delete props[k]
+      }
+    }
   }
 
   function patch(n1, n2, container, anchor) {
