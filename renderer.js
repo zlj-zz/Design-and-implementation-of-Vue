@@ -1,4 +1,4 @@
-import { reactive, shallowReactive, effect } from './reactivity.js'
+import { reactive, shallowReactive, effect, shallowReadonly } from './reactivity.js'
 
 // 任务缓存队列，用 Set 来进行去重
 const queue = new Set()
@@ -299,13 +299,14 @@ function createRenderer(options) {
   function mountComponent(vnode, container, anchor) {
     // 获取组件选项，即 vnode.type
     const componentOptions = vnode.type
-    const { render, data, props: propsOption, beforeCreate, created,
+    const { render, data, setup, props: propsOption,
+      beforeCreate, created,
       beforeMounted, mounted, beforeUpdate, updated } = componentOptions
 
     beforeCreate && beforeCreate()
 
     // 调用 data 获取原始数据，并包装成响应式
-    const state = reactive(data())
+    const state = data ? reactive(data()) : null
     //
     const [props, attrs] = resolveProps(propsOption, vnode.props)
 
@@ -317,19 +318,38 @@ function createRenderer(options) {
       subTree: null
     }
 
+    const setupContext = { attrs }
+    // 调用 setup 函数，传入第一个参数为只读的 props，避免用户意外的修改 props
+    // 将 setupContext 作为第二个参数传入
+    const setupResult = setup(shallowReadonly(instance.props), setupContext)
+    // 存储 setup 返回的数据
+    let setupState = null
+    // 如果 setup 返回函数，将视为渲染函数
+    if (typeof setupResult === 'function') {
+      // 报告冲突
+      if (render) console.error('setup 函数返回渲染函数，render 选项将被忽略')
+
+      render = setupResult
+    } else {
+      // 如果返回的不是函数，则视为数据状态给 setupState
+      setupState = setupResult
+    }
+
     // 将组件实例设置到 vnode 上，用于后续更新
     vnode.component = instance
 
     // 创建渲染上下文对象，本质上是组件实例的代理
     const renderContext = new Proxy(instance, {
       get(t, k, r) {
-        //
+        // 获取组件自身状态和 props 属性
         const { state, props } = t
-        //
+
         if (state && k in state) {
           return state[k]
         } else if (k in props) {
           return props[k]
+        } else if (setupState && k in setupState) {
+          return setupState[k]
         } else {
           console.error('不存在')
         }
@@ -341,6 +361,8 @@ function createRenderer(options) {
           state[k] = v
         } else if (k in props) {
           props[k] = v
+        } else if (setupState && k in setupState) {
+          setupState[k] = v
         } else {
           console.error('不存在')
         }
