@@ -1,3 +1,46 @@
+import { reactive, shallowReactive, effect } from './reactivity.js'
+
+// 任务缓存队列，用 Set 来进行去重
+const queue = new Set()
+// 标志位，是否正在刷新任务队列
+let isFlushing = false
+// 创建一个立即 resolve 的 Promise 实例
+const p = Promise.resolve()
+
+// 调度器主要函数，用来将一个任务添加到队列中，并开始刷新队列
+function queueJob(job) {
+  queue.add(job)
+  if (!isFlushing) {
+    isFlushing = true
+    p.then(() => {
+      try {
+        queue.forEach(job => job())
+      } finally {
+        isFinite = false
+        queue.length = 0
+      }
+    })
+  }
+}
+
+function resolveProps(options, propData) {
+  const props = {}
+  const attrs = {}
+
+  // 遍历为组件传递的 props
+  for (const key in propData) {
+    // 如果传入的 props 在组件的 props 上有定义，则视为合法 props
+    if (key in options) {
+      props[key] = propData[key]
+    } else {
+      // 否则作为 attrs
+      attrs[key] = propData[key]
+    }
+  }
+
+  return [props, attrs]
+}
+
 const Text = Symbol() // 文本节点的 type 标识
 const Comment = Symbol() // 注释节点的 type 标识
 const Fragment = Symbol()
@@ -234,6 +277,62 @@ function createRenderer(options) {
     // 如果也没有旧字节点，则什么都不需要做
   }
 
+  function mountComponent(vnode, container, anchor) {
+    // 获取组件选项，即 vnode.type
+    const componentOptions = vnode.type
+    const { render, data, props: propsOption, beforeCreate, created,
+      beforeMounted, mounted, beforeUpdate, updated } = componentOptions
+
+    beforeCreate && beforeCreate()
+
+    // 调用 data 获取原始数据，并包装成响应式
+    const state = reactive(data())
+    //
+    const [props, attrs] = resolveProps(propsOption, vnode.props)
+
+    // 定义组件实例
+    const instance = {
+      state,
+      props: shallowReactive(props),
+      isMounted: false,
+      subTree: null
+    }
+
+    // 将组件实例设置到 vnode 上，用于后续更新
+    vnode.component = instance
+
+    created && created()
+
+    effect(() => {
+      // 执行渲染函数，获取渲染内容；将 this 设置为 state
+      const subTree = render.call(state, state)
+
+      // 检查组件是否被挂载
+      if (!instance.isMounted) {
+        beforeMounted && beforeMounted()
+
+        // 调用 patch 函数挂载组件内容
+        patch(null, subTree, container, anchor)
+        // 修改挂载状态
+        instance.isMounted = true
+
+        mounted && mounted()
+      } else {
+        beforeUpdate && beforeUpdate()
+
+        // 更新组件
+        patch(instance.subTree, subTree, container, anchor)
+
+        updated && updated()
+      }
+      // 更新实例的子树
+      instance.subTree = subTree
+    }, {
+      // 指定该副作用函数的调度器
+      scheduler: queueJob
+    })
+  }
+
   function patch(n1, n2, container, anchor) {
     if (n1 && n1.type !== n2.type) {
       unmount(n1)
@@ -249,8 +348,6 @@ function createRenderer(options) {
         // 更新
         patchElement(n1, n2)
       }
-    } else if (typeof type === 'object') {
-      //如果 n2.type 的值是类型对象，则它描述的是组件
     } else if (type === Text) {
       if (!n1) {
         // 调用 createText 创建文本节点
@@ -272,6 +369,14 @@ function createRenderer(options) {
       } else {
         // 如果旧 vnode 存在， 则只需更新 Fragment 的 children 即可
         patchChildren(n1, n2, container)
+      }
+    } else if (typeof type === 'object') {
+      //如果 n2.type 的值是类型对象，则它描述的是组件
+      if (!n1) {
+        mountComponent(n2, container, anchor)
+      } else {
+        // 更新组件
+        patchComponent(n1, n2, anchor)
       }
     }
   }
@@ -396,6 +501,8 @@ const renderer = createRenderer({
   }
 })
 
+
+/** test */
 const vnode = {
   type: 'div',
   props: {
@@ -412,4 +519,30 @@ const vnode = {
       children: 'text`SS'
     }
   ]
+}
+
+const MyComponent = {
+  name: 'MyComponent',
+  data() {
+    return {
+      foo: 'hello world'
+    }
+  },
+  props: {
+    title: String
+  },
+  render() {
+    return {
+      type: 'div',
+      children: `foo 的值是：${this.foo}`
+    }
+  }
+}
+
+const vnode1 = {
+  type: MyComponent,
+  props: {
+    title: 'A big title',
+    other: this.val
+  }
 }

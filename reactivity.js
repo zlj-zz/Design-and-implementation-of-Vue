@@ -568,7 +568,7 @@ function proxyRefs(target) {
   })
 }
 
-
+export { reactive, shallowReactive, effect }
 
 
 /** test part */
