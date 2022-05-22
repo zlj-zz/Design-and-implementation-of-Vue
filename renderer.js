@@ -1,4 +1,7 @@
-import { reactive, shallowReactive, effect, shallowReadonly } from './reactivity.js'
+import {
+  reactive, shallowReactive, effect, shallowReadonly,
+  ref, shallowRef
+} from './reactivity.js'
 
 // 任务缓存队列，用 Set 来进行去重
 const queue = new Set()
@@ -298,8 +301,18 @@ function createRenderer(options) {
   }
 
   function mountComponent(vnode, container, anchor) {
+    // 检查是否是函数式组件
+    const isFunctional = typeof vnode.type === 'function'
+
     // 获取组件选项，即 vnode.type
-    const componentOptions = vnode.type
+    let componentOptions = vnode.type
+    if (isFunctional) {
+      componentOptions = {
+        render: vnode.type,
+        props: vnode.type.props
+      }
+    }
+
     const { render, data, setup, props: propsOption,
       beforeCreate, created,
       beforeMounted, mounted, beforeUpdate, updated } = componentOptions
@@ -482,7 +495,7 @@ function createRenderer(options) {
         // 如果旧 vnode 存在， 则只需更新 Fragment 的 children 即可
         patchChildren(n1, n2, container)
       }
-    } else if (typeof type === 'object') {
+    } else if (typeof type === 'object' || typeof type === 'function') {
       //如果 n2.type 的值是类型对象，则它描述的是组件
       if (!n1) {
         mountComponent(n2, container, anchor)
@@ -497,6 +510,10 @@ function createRenderer(options) {
     // 卸载时，如果类型为 Fragment，则只需卸载 Fragment 的 children
     if (vnode.type === Fragment) {
       vnode.children.forEach(c => unmount(c))
+      return
+    } else if (typeof vnode.type === 'object') {
+      // 卸载组件，本质是卸载组件渲染的内容
+      unmount(vnode.component.subTree)
       return
     }
 
@@ -613,6 +630,107 @@ const renderer = createRenderer({
   }
 })
 
+// 用于定义各异异步组件，接收一个异步组件加载器作为参数
+function defineAsyncComponent(options) {
+  // 允许直接传入加载器
+  if (typeof options === 'function') {
+    options = {
+      loader: options
+    }
+  }
+
+  const { loader } = options
+
+  // 存储异步加载的组件
+  let InnerComp = null
+
+  // 记录重试次数
+  let retries = 0
+  // 封装 load 来调用异步加载组件
+  function load() {
+    return loader().catch(err => {
+      if (options.onError) {
+        return new Promise((resolve, reject) => {
+          //
+          const retry = () => {
+            resolve(load())
+            retries++
+          }
+          //
+          const fail = () => reject(err)
+          options.onError(retry, fail, retries)
+        })
+      } else {
+        throw err
+      }
+    })
+  }
+
+  // 返回一个包装组件
+  return {
+    name: 'AsyncComponentWrapper',
+    setup() {
+      // 是否异步加载成功标记
+      const loaded = ref(false)
+      // 存储错误对象
+      const error = shallowRef(null)
+      // 是否正在加载标记
+      const loading = ref(false)
+
+      let loadingTimer = null
+      // 如果设置了 delay，开启一个定时器，当到期后这是 loading.value 为 true
+      if (options.delay) {
+        loadingTimer = setTimeout(() => {
+          loading.value = true
+        }, options.delay)
+      } else {
+        // 否则直接设置为 true
+        loading.value = true
+      }
+
+      // 执行 loader 返回一个 Promise 实例
+      // 加载成功后的组件赋值给 InnerComp，修改标记
+      load().then(c => {
+        InnerComp = c
+        loaded.value = true
+      })
+        // 捕捉错误
+        .catch((err) => error.value = err)
+        .finally(() => {
+          loading.value = false
+          clearTimeout(loadingTimer)
+        })
+
+      let timer = null
+      if (options.timeout) {
+        timer = setTimeout(() => {
+          const err = new Error(`Async component timed out after ${options.timeout}`)
+          error.value = err
+        }, options.timeout)
+      }
+      // 卸载时移除定时器
+      onUnmounted(() => clearTimeout(timer))
+
+      // 占位内容
+      const placeholder = { type: Text, children: '' }
+
+      return () => {
+        if (loaded.value) {
+          // 如果加载成功返回组件，否则返回一个占位内容
+          return { type: InnerComp }
+        } else if (error.value && options.errorComponent) {
+          // 如果加载超时，如果用户定义了 Error 组件，则返回 Error 组件
+          return { type: options.errorComponent, props: { error: error.value } }
+        } else if (loading.value && options.loadingComponent) {
+          // 如果正在加载，且指定了 Loading 组件，则渲染 Loading 组件
+          return { type: options.loadingComponent }
+        }
+        return placeholder
+      }
+    }
+  }
+}
+
 
 /** test */
 const vnode = {
@@ -668,3 +786,9 @@ const MyComponent2 = {
     }
   }
 }
+
+const AsyncComp = defineAsyncComponent({
+  loader: () => import('CompA.vue'),
+  timeout: 2000,
+  errorComponent: MyErrorComp
+})

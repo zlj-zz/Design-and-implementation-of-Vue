@@ -519,6 +519,18 @@ function ref(val) {
   return reactive(wrapper)
 }
 
+function shallowRef(val) {
+  const wrapper = {
+    value: val
+  }
+  // 使用 Object.defineProperty 在 wrapper 上定义一个不可枚举属性 __v_isRef，并设置为 true
+  Object.defineProperty(wrapper, '__v_isRef', {
+    value: true
+  })
+
+  return shallowReactive(wrapper)
+}
+
 function toRef(obj, key) {
   const wrapper = {
     get value() {
@@ -568,7 +580,7 @@ function proxyRefs(target) {
   })
 }
 
-export { effect, reactive, shallowReactive, shallowReadonly }
+export { effect, reactive, shallowReactive, shallowReadonly, ref, shallowRef, toRef }
 
 
 /** test part */
