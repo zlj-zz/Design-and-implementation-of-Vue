@@ -416,6 +416,22 @@ function parseInterpolation(context) {
   }
 }
 
+function parseComment(context) {
+  // 消费开始部分
+  context.advanceBy('<!--'.length)
+  // 找到注释结束的索引
+  closeIndex = context.source.indexOf('-->')
+  // 截取注释内容
+  const content = context.source.slice(0, closeIndex)
+  // 消费就结束部分
+  context.advanceBy('-->'.length)
+  // 返回节点
+  return {
+    type: 'Comment',
+    content
+  }
+}
+
 
 
 
